@@ -1,0 +1,11 @@
+
+Store current command in a temporary buffer, keep writing this temp buffer to the final buffer.
+	- On backspace, just update the temporary buffer
+
+
+
+Todo:
+- Reflow text on window resize
+- Support modifier keys
+- Support scroll/history
+- Some problem with grid size on programs, for example, any binary open crashes this program

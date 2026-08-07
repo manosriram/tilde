@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Sender};
-use std::{fs, thread};
+use std::{char, fs, thread};
 
 use fontdue::{Font, FontSettings, Metrics};
 use portable_pty::{CommandBuilder, PtyPair, PtySize, PtySystem, native_pty_system};
@@ -38,11 +38,18 @@ struct App {
     channel_sender: Option<mpsc::Sender<Vec<u8>>>,
     channel_recv: Option<mpsc::Receiver<Vec<u8>>>,
     cursor_position: Option<Point>,
+
+    current_cmd_temp_buffer: String,
 }
 
 impl App {
+    // fn add_to_temp_buffer_and_write_to_window_buffer(&mut self, ch: char) {
+        // self.current_cmd_temp_buffer.push(ch);
+    // }
+
     fn init(&mut self) {
         self.fontmap = HashMap::new();
+        self.current_cmd_temp_buffer = String::new();
         self.cursor_position = Some(Point { x: 0, y: 0 });
 
         self.grid = vec![' '; 6400];
@@ -58,7 +65,6 @@ impl App {
             let f = font.rasterize(*x.0, 13.0);
             self.fontmap.insert(*x.0, f);
         }
-        println!("{:?}", self.fontmap.get(&'a'));
 
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -125,7 +131,41 @@ impl ApplicationHandler for App {
         match cm {
             Ok(v) => {
                 let r = String::from_utf8(v);
+                let mut prev = String::new();
                 for ch in r.unwrap().chars() {
+                    println!("{}", ch);
+                    if ch == '\u{8}' || ch == '\u{1b}' {
+                        continue;
+                    }
+
+                    if ch == '[' {
+                        prev = ch.to_string();
+                        println!("continuing");
+                        continue;
+                    }
+
+
+                    if prev == "[" {
+                        if ch.to_string() == "K" {
+                            println!("new ch = {}", ch.to_string());
+                            let cp = self.cursor_position.as_mut().unwrap();
+                            if cp.x > 0 {
+                                cp.x -= 1;
+                            } else {
+                                prev = "".to_string();
+                                continue;
+                            }
+
+                            let cp = self.cursor_position.unwrap();
+                            self.grid[cp.y * 80 + cp.x] = ' ';
+                            self.window.as_ref().unwrap().request_redraw();
+                            prev = "".to_string();
+
+                            continue;
+                        }
+                    }
+
+
                     if ch == '\n' {
                         self.cursor_position.as_mut().unwrap().y += 1;
                     }
@@ -163,7 +203,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 println!("requesting after run");
-                println!("grid : {:?}", self.grid);
+                // println!("grid : {:?}", self.grid);
 
                 let size = self.window.as_ref().unwrap().surface_size();
                 let (width, height) = (size.width, size.height);
@@ -219,7 +259,13 @@ impl ApplicationHandler for App {
                     Key::Named(k) => match k {
                         NamedKey::Enter => {
                             write!(self.writer.as_mut().unwrap(), "\n").unwrap();
-                        }
+                        },
+                        NamedKey::Backspace => {
+                            // write!(self.writer.as_mut().unwrap(), "\x08 \x08").unwrap();
+                            // write!(self.writer.as_mut().unwrap(), "0x7fu8").unwrap();
+                            // self.writer.as_mut().unwrap().flush();
+                            self.writer.as_mut().unwrap().write_all(&[0x7fu8]).unwrap();
+                        },
                         _ => {}
                     },
                     Key::Character(ch) => {
