@@ -41,22 +41,18 @@ struct App {
     cursor_position: Option<Point>,
 
     current_cmd_temp_buffer: Vec<char>,
+    current_inline_raw_cmd: String,
     scrollbuffer: VecDeque<Vec<char>>,
 }
 
 impl App {
-    // fn add_to_temp_buffer_and_write_to_window_buffer(&mut self, ch: char) {
-        // self.current_cmd_temp_buffer.push(ch);
-    // }
-
     fn init(&mut self) {
         self.scrollbuffer = VecDeque::new();
 
         self.fontmap = HashMap::new();
         self.current_cmd_temp_buffer = Vec::new();
+        self.current_inline_raw_cmd = String::new();
         self.cursor_position = Some(Point { x: 0, y: 0 });
-
-        // self.grid = vec![' '; 6400];
 
         let (sender, receiver) = channel();
         self.channel_sender = Some(sender);
@@ -90,9 +86,7 @@ impl App {
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
-                    // Ok(1) => break,
                     Ok(n) => {
-                        // print!("zz = {}", String::from_utf8_lossy(&buf[..n]));
                         tx.send(buf[..n].to_vec());
                     }
                     Err(e) => {
@@ -150,15 +144,13 @@ impl ApplicationHandler for App {
                     if prev == "[" {
                         if ch.to_string() == "K" {
                             let cp = self.cursor_position.as_mut().unwrap();
+
+                            self.current_cmd_temp_buffer.pop();
                             if cp.x > 0 {
                                 cp.x -= 1;
-                            } else {
-                                prev = "".to_string();
-                                continue;
+                                println!("{}", self.cursor_position.as_ref().unwrap().x);
                             }
-
-                            // let cp = self.cursor_position.unwrap();
-                            // self.grid[cp.y * 80 + cp.x] = ' ';
+                            // self.current_cmd_temp_buffer.last().replace(&' ');
                             self.window.as_ref().unwrap().request_redraw();
                             prev = "".to_string();
 
@@ -168,30 +160,23 @@ impl ApplicationHandler for App {
 
 
                     if ch == '\n' {
-                        self.cursor_position.as_mut().unwrap().y += 1;
                         self.current_cmd_temp_buffer.push(ch);
                         self.scrollbuffer.push_front(self.current_cmd_temp_buffer.clone());
                         self.current_cmd_temp_buffer.clear();
-                    }
-                    if ch == '\r' {
+                        self.cursor_position.as_mut().unwrap().y += 1;
+                    } else if ch == '\r' {
                         self.cursor_position.as_mut().unwrap().x = 0;
                     }
-
-                    // if self.cursor_position.as_mut().unwrap().x > 80 {
-                        // self.cursor_position.as_mut().unwrap().y += 1;
-                        // self.cursor_position.as_mut().unwrap().x = 0;
-                    // }
 
 
                     self.current_cmd_temp_buffer.push(ch);
                     self.cursor_position.as_mut().unwrap().x += 1;
+
                     self.window.as_ref().unwrap().request_redraw();
                 }
             }
             Err(e) => {}
         };
-
-        // println!("{:?}", cm);
     }
 
     fn window_event(
@@ -201,10 +186,7 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         match event { 
-            WindowEvent::SurfaceResized(event, ..) => {
-
-                // self.pty.as_mut().unwrap().master.as_mut().resize(PtySize { rows: event.width as u16, cols: event.height as u16, pixel_width: 0, pixel_height: 0});
-            },
+            WindowEvent::SurfaceResized(event, ..) => { },
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
@@ -229,15 +211,15 @@ impl ApplicationHandler for App {
 
                 let cell_h = 13;
                 let cell_w = 13;
-                let visible_rows = ((height as usize) / cell_h) - 2;
-                let visible_cols = ((width as usize) / cell_w) - 2;
+                let visible_rows = ((height as usize) / cell_h) - 3;
+                let visible_cols = ((width as usize) / cell_w) - 3;
                 
                 for y in 0..visible_rows {
                     for x in 0..visible_cols {
                         let line: &Vec<char> = if y == visible_rows - 1 {
                             &self.current_cmd_temp_buffer
                         } else {
-                            let idx = visible_rows - y - 1;
+                            let idx = visible_rows - 2 - y;
                             if idx>= self.scrollbuffer.len() {continue;}
                             &self.scrollbuffer[idx]
                         };
@@ -277,14 +259,27 @@ impl ApplicationHandler for App {
                 Pressed => match event.logical_key {
                     Key::Named(k) => match k {
                         NamedKey::Enter => {
+                            // if self.current_cmd_temp_buffer.len() > 0 {
+                                // let zz: String = self.current_cmd_temp_buffer.iter().collect();
+                                // let zzz = &zz;
+                                // println!("zzz = {}", zzz);
+                                // write!(self.writer.as_mut().unwrap(), "{zzz}\n").unwrap();
+                            // } else {
                             write!(self.writer.as_mut().unwrap(), "\n").unwrap();
+                            // }
                         },
                         NamedKey::Backspace => {
-                            self.writer.as_mut().unwrap().write_all(&[0x7fu8]).unwrap();
+                            // let zz: String = self.current_cmd_temp_buffer.iter().collect();
+                            // println!("bksp = {}", zz);
+                            if self.current_inline_raw_cmd.len() > 0 {
+                                self.writer.as_mut().unwrap().write_all(&[0x7fu8]).unwrap();
+                                self.current_inline_raw_cmd.pop();
+                            }
                         },
                         _ => {}
                     },
                     Key::Character(ch) => {
+                        self.current_inline_raw_cmd += &ch.to_string();
                         write!(self.writer.as_mut().unwrap(), "{ch}").unwrap();
                     }
                     Key::Unidentified(_) => {}
