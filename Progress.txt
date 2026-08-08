@@ -9,3 +9,4 @@ Todo:
 - Support modifier keys
 - Support scroll/history
 - Some problem with grid size on programs, for example, any binary open crashes this program
+- Handle spaces, \r, \n properly

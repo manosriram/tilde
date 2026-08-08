@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::io::{Read, Write};
 use std::num::NonZeroU32;
@@ -9,6 +9,7 @@ use std::{char, fs, thread};
 use fontdue::{Font, FontSettings, Metrics};
 use portable_pty::{CommandBuilder, PtyPair, PtySize, PtySystem, native_pty_system};
 use softbuffer::Surface;
+use winit::cursor::CursorIcon::Cell;
 use std::sync::mpsc::channel;
 use winit::application::ApplicationHandler;
 use winit::event::ElementState::Pressed;
@@ -39,7 +40,8 @@ struct App {
     channel_recv: Option<mpsc::Receiver<Vec<u8>>>,
     cursor_position: Option<Point>,
 
-    current_cmd_temp_buffer: String,
+    current_cmd_temp_buffer: Vec<char>,
+    scrollbuffer: VecDeque<Vec<char>>,
 }
 
 impl App {
@@ -48,11 +50,13 @@ impl App {
     // }
 
     fn init(&mut self) {
+        self.scrollbuffer = VecDeque::new();
+
         self.fontmap = HashMap::new();
-        self.current_cmd_temp_buffer = String::new();
+        self.current_cmd_temp_buffer = Vec::new();
         self.cursor_position = Some(Point { x: 0, y: 0 });
 
-        self.grid = vec![' '; 6400];
+        // self.grid = vec![' '; 6400];
 
         let (sender, receiver) = channel();
         self.channel_sender = Some(sender);
@@ -80,7 +84,7 @@ impl App {
         pair.slave.spawn_command(cmd).unwrap();
 
         let mut reader = pair.master.try_clone_reader().unwrap();
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 10000];
         let tx = self.channel_sender.clone().unwrap();
         let r = thread::spawn(move || {
             loop {
@@ -126,14 +130,12 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
-        // println!("grid : {:?}", self.grid);
         let cm = self.channel_recv.as_ref().unwrap().try_recv();
         match cm {
             Ok(v) => {
                 let r = String::from_utf8(v);
                 let mut prev = String::new();
                 for ch in r.unwrap().chars() {
-                    println!("{}", ch);
                     if ch == '\u{8}' || ch == '\u{1b}' {
                         continue;
                     }
@@ -147,7 +149,6 @@ impl ApplicationHandler for App {
 
                     if prev == "[" {
                         if ch.to_string() == "K" {
-                            println!("new ch = {}", ch.to_string());
                             let cp = self.cursor_position.as_mut().unwrap();
                             if cp.x > 0 {
                                 cp.x -= 1;
@@ -156,8 +157,8 @@ impl ApplicationHandler for App {
                                 continue;
                             }
 
-                            let cp = self.cursor_position.unwrap();
-                            self.grid[cp.y * 80 + cp.x] = ' ';
+                            // let cp = self.cursor_position.unwrap();
+                            // self.grid[cp.y * 80 + cp.x] = ' ';
                             self.window.as_ref().unwrap().request_redraw();
                             prev = "".to_string();
 
@@ -168,19 +169,21 @@ impl ApplicationHandler for App {
 
                     if ch == '\n' {
                         self.cursor_position.as_mut().unwrap().y += 1;
+                        self.current_cmd_temp_buffer.push(ch);
+                        self.scrollbuffer.push_front(self.current_cmd_temp_buffer.clone());
+                        self.current_cmd_temp_buffer.clear();
                     }
                     if ch == '\r' {
                         self.cursor_position.as_mut().unwrap().x = 0;
                     }
 
-                    if self.cursor_position.as_mut().unwrap().x > 80 {
-                        self.cursor_position.as_mut().unwrap().y += 1;
-                        self.cursor_position.as_mut().unwrap().x = 0;
-                    }
+                    // if self.cursor_position.as_mut().unwrap().x > 80 {
+                        // self.cursor_position.as_mut().unwrap().y += 1;
+                        // self.cursor_position.as_mut().unwrap().x = 0;
+                    // }
 
-                    self.grid
-                        [self.cursor_position.unwrap().y * 80 + self.cursor_position.unwrap().x] =
-                        ch;
+
+                    self.current_cmd_temp_buffer.push(ch);
                     self.cursor_position.as_mut().unwrap().x += 1;
                     self.window.as_ref().unwrap().request_redraw();
                 }
@@ -197,19 +200,22 @@ impl ApplicationHandler for App {
         _id: WindowId,
         event: WindowEvent,
     ) {
-        match event {
+        match event { 
+            WindowEvent::SurfaceResized(event, ..) => {
+
+                // self.pty.as_mut().unwrap().master.as_mut().resize(PtySize { rows: event.width as u16, cols: event.height as u16, pixel_width: 0, pixel_height: 0});
+            },
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
                 println!("requesting after run");
-                // println!("grid : {:?}", self.grid);
-
                 let size = self.window.as_ref().unwrap().surface_size();
                 let (width, height) = (size.width, size.height);
                 let Some(surface) = self.surface.as_mut() else {
                     return;
                 };
+
                 if width == 0 || height == 0 {
                     return;
                 }
@@ -219,12 +225,25 @@ impl ApplicationHandler for App {
                         NonZeroU32::new(height).unwrap(),
                     )
                     .unwrap();
-
                 let mut buffer = surface.buffer_mut().unwrap();
 
-                for y in 0..80 {
-                    for x in 0..80 {
-                        let fmr = self.fontmap.get(&self.grid[(y * 80 + x) as usize]);
+                let cell_h = 13;
+                let cell_w = 13;
+                let visible_rows = ((height as usize) / cell_h) - 2;
+                let visible_cols = ((width as usize) / cell_w) - 2;
+                
+                for y in 0..visible_rows {
+                    for x in 0..visible_cols {
+                        let line: &Vec<char> = if y == visible_rows - 1 {
+                            &self.current_cmd_temp_buffer
+                        } else {
+                            let idx = visible_rows - y - 1;
+                            if idx>= self.scrollbuffer.len() {continue;}
+                            &self.scrollbuffer[idx]
+                        };
+                        if x >= line.len() { continue; }
+
+                        let fmr = self.fontmap.get(&line[x]);
                         match fmr {
                             Some(fmi) => {
                                 let px = x * 13;
@@ -261,15 +280,11 @@ impl ApplicationHandler for App {
                             write!(self.writer.as_mut().unwrap(), "\n").unwrap();
                         },
                         NamedKey::Backspace => {
-                            // write!(self.writer.as_mut().unwrap(), "\x08 \x08").unwrap();
-                            // write!(self.writer.as_mut().unwrap(), "0x7fu8").unwrap();
-                            // self.writer.as_mut().unwrap().flush();
                             self.writer.as_mut().unwrap().write_all(&[0x7fu8]).unwrap();
                         },
                         _ => {}
                     },
                     Key::Character(ch) => {
-                        println!("{}", ch);
                         write!(self.writer.as_mut().unwrap(), "{ch}").unwrap();
                     }
                     Key::Unidentified(_) => {}
@@ -286,7 +301,5 @@ fn main() {
     let event_loop = EventLoop::new().unwrap();
     let mut def = App::default();
     def.init();
-    def.run("ls -l");
-    def.run("pwd");
     event_loop.run_app(def).unwrap();
 }
